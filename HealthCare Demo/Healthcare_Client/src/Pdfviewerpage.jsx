@@ -17,7 +17,7 @@ import {
   Inject
 } from "@syncfusion/ej2-react-pdfviewer";
 
-export default function Pdfviewerpage({ user, patient, onBack }) {
+export default function Pdfviewerpage({ user, patient, onBack, pdfFileName }) {
   const viewerRef = useRef(null);
   const [modalFileName, setModalFileName] = useState("");
   /* ==============================
@@ -71,88 +71,310 @@ export default function Pdfviewerpage({ user, patient, onBack }) {
      ✅ Load Admin‑Filled PDF
   ============================== */
   const [adminFilledPdfName, setAdminFilledPdfName] = useState(null);
-  useEffect(() => {
-    const loadCorrectPdf = async () => {
-      try {
-        const pid = String(patient?.patientId || patient?.id || "").trim();
-        if (!pid) return;
+useEffect(() => {
+  const loadCorrectPdf = async () => {
+    try {
+      const pid = String(patient?.patientId || patient?.id || "").trim();
+      if (!pid) return;
 
-        const res = await fetch(
-          `${API_BASE}/api/Authentication/GetUserFiles?username=ALL`,
-          { cache: "no-cache" }
-        );
-        const files = await res.json();
-        // ✅ Only PDFs for this patient
-        const patientFiles = files.filter(f =>
+      // ✅ CRITICAL FIX: If pdfFileName is passed (from patient.formPdf), use it directly!
+      if (pdfFileName && typeof pdfFileName === "string" && pdfFileName.trim()) {
+        setAdminFilledPdfName(pdfFileName.trim());
+        return;
+      }
+
+      const res = await fetch(
+        `${API_BASE}/api/Authentication/GetUserFiles?username=ALL`,
+        { cache: "no-cache" }
+      );
+
+      const files = await res.json();
+
+      // ✅ Only PDFs for this patient
+      const patientFiles = files.filter(
+        (f) =>
           typeof f.fileName === "string" &&
           f.fileName.includes(`_${pid}`)
-        );
+      );
 
-        if (patientFiles.length === 0) {
-          console.warn("No PDF found for patient", pid);
-          return;
-        }
-        // ✅ Separate categories
-        const finalDoctor = patientFiles.filter(f =>
-          f.fileName.includes("_FINAL_DOCTOR")
-        );
-        const finalLab = patientFiles.filter(f =>
-          f.fileName.includes("_FINAL_LAB")
-        );
-        const labAttach = patientFiles.filter(f =>
-          f.fileName.includes("_LAB_ATTACH")
-        );
-        const lab = patientFiles.filter(f =>
-          f.fileName.includes("_LAB_")
-        );
+      if (patientFiles.length === 0) {
+        console.warn("No PDF found for patient", pid, "Available files:", files.map(f => f.fileName));
+        return;
+      }
 
-        // ✅ ADMIN = base file (no stage suffix)
-        const admin = patientFiles.filter(f =>
+      const sortNewest = (a, b) =>
+        new Date(b.createdAt) - new Date(a.createdAt);
+
+      // ✅ Priority order
+      const finalLab = patientFiles.filter(f =>
+        f.fileName.includes("_FINAL_LAB")
+      );
+      if (finalLab.length) {
+        setAdminFilledPdfName(finalLab.sort(sortNewest)[0].fileName);
+        return;
+      }
+
+      const finalDoctor = patientFiles.filter(f =>
+        f.fileName.includes("_FINAL_DOCTOR")
+      );
+      if (finalDoctor.length) {
+        setAdminFilledPdfName(finalDoctor.sort(sortNewest)[0].fileName);
+        return;
+      }
+
+      const labAttach = patientFiles.filter(f =>
+        f.fileName.includes("_LAB_ATTACH")
+      );
+      if (labAttach.length) {
+        setAdminFilledPdfName(labAttach.sort(sortNewest)[0].fileName);
+        return;
+      }
+
+      // ✅ FIXED: Handle both _LAB_ and _LAB patterns
+      const lab = patientFiles.filter(f => {
+        const fname = f.fileName.toLowerCase();
+        return fname.includes("_lab_") || 
+               (fname.includes("_lab.pdf") && !fname.includes("_lab_attach"));
+      });
+      if (lab.length) {
+        setAdminFilledPdfName(lab.sort(sortNewest)[0].fileName);
+        return;
+      }
+
+      // ✅ ✅ CRITICAL FIX: fallback to BASE ADMIN PDF
+      const adminBase = patientFiles.filter(
+        f =>
           !f.fileName.includes("_LAB") &&
           !f.fileName.includes("_FINAL")
-        );
-        const sortNewest = (a, b) =>
-          new Date(b.createdAt) - new Date(a.createdAt);
-        // ✅ Priority order
-        if (finalLab.length) {
-          setAdminFilledPdfName(finalLab.sort(sortNewest)[0].fileName);
-          return;
-        }
-        if (finalDoctor.length) {
-          setAdminFilledPdfName(finalDoctor.sort(sortNewest)[0].fileName);
-          return;
-        }
-        if (labAttach.length) {
-          setAdminFilledPdfName(labAttach.sort(sortNewest)[0].fileName);
-          return;
-        }
-        if (lab.length) {
-          setAdminFilledPdfName(lab.sort(sortNewest)[0].fileName);
-          return;
-        }
+      );
 
-        // ✅ FALLBACK → Admin PDF (THIS FIXES YOUR ISSUE)
-        admin.sort(sortNewest);
-        setAdminFilledPdfName(admin[0].fileName);
-
-      } catch (err) {
-        console.error("PDF resolution failed", err);
+      if (adminBase.length) {
+        setAdminFilledPdfName(adminBase.sort(sortNewest)[0].fileName);
+        return;
       }
-    };
-    loadCorrectPdf();
-  }, [patient, API_BASE]);
+    } catch (err) {
+      console.error("PDF resolution failed", err);
+    }
+  };
 
+  loadCorrectPdf();
+}, [patient, API_BASE]);
+const applyDoctorReadOnlyRules = () => {
+  if (user?.role !== "Doctor") return;
+
+  const viewer =
+    viewerRef.current?.ej2Instances || viewerRef.current;
+  if (!viewer) return;
+
+  const DOCTOR_EDITABLE_FIELDS = [
+    "symptoms",
+    "diagnosis",
+    "nextvisit",
+    "doctorsignature",
+    "me1",
+    "me2",
+    "me3",
+    "me4",
+    "me5",
+    "m1",
+    "a1",
+    "n1",
+    "m2",
+    "a2",
+    "n2",
+    "m3",
+    "a3",
+    "n3",
+    "m4",
+    "a4",
+    "n4",
+    "m5",
+    "a5",
+    "n5"
+  ];
+
+  const fields =
+    viewer.formFieldCollections ||
+    viewer.retrieveFormFields?.() ||
+    [];
+
+  const normalized = Array.isArray(fields)
+    ? fields
+    : Object.values(fields);
+
+  normalized.forEach((field) => {
+    const name = (field.name || "").toLowerCase();
+
+    // ✅ EXACT MATCH ONLY
+    const shouldBeEditable = DOCTOR_EDITABLE_FIELDS.includes(name);
+
+    viewer.formDesignerModule?.updateFormField(field.id, {
+      isReadOnly: !shouldBeEditable,
+      isEnabled: shouldBeEditable
+    });
+  });
+};
+const TEST_TO_ATTACHMENT_MAP = {
+  bloodtest: "bloodattach",
+  urinetest: "urineattach",
+  ecg: "ecgattach",
+  ctscan: "ctattach",
+  mri: "mriattach",
+  xray: "xrayattach",
+  ultrasound: "ultrasoundattach",
+  endoscopy: "endoscopyattach",
+  biopsy: "biopsyattach",
+  bronchoscopy: "bronchoscopyattach"
+};
+const syncTestFieldsToAttachments = () => {
+  const viewer =
+    viewerRef.current?.ej2Instances || viewerRef.current;
+  if (!viewer) return;
+
+  const fields =
+    viewer.formFieldCollections ||
+    viewer.retrieveFormFields?.() ||
+    [];
+
+  const normalized = Array.isArray(fields)
+    ? fields
+    : Object.values(fields);
+
+  const fieldMap = {};
+  normalized.forEach((f) => {
+    fieldMap[(f.name || "").toLowerCase()] = f;
+  });
+
+  Object.entries(TEST_TO_ATTACHMENT_MAP).forEach(
+    ([testName, attachName]) => {
+      const testField = fieldMap[testName];
+      const attachField = fieldMap[attachName];
+
+      // ✅ CORRECT: use isSelected for checkbox fields
+      const isSelected =
+        testField?.isSelected === true;
+
+      if (isSelected && attachField) {
+        // ✅ Auto-fill only if empty
+        if (!attachField.value) {
+          viewer.formDesignerModule.updateFormField(
+            attachField.id,
+            {
+              value: "Requested"
+            }
+          );
+        }
+
+        // ✅ Ensure attachment field is editable
+        viewer.formDesignerModule.updateFormField(
+          attachField.id,
+          {
+            isReadOnly: false,
+            isEnabled: true
+          }
+        );
+      }
+    }
+  );
+};
+
+const applyLabReadOnlyRules = () => {
+  if (user?.role !== "Lab") return;
+
+  const viewer =
+    viewerRef.current?.ej2Instances || viewerRef.current;
+  if (!viewer) return;
+
+  const LAB_EDITABLE_FIELDS = [
+    "bloodattach",
+    "urineattach",
+    "ecgattach",
+    "ctattach",
+    "mriattach",
+    "xrayattach",
+    "ultrasoundattach",
+    "endoscopyattach",
+    "biopsyattach",
+    "bronchoscopyattach",
+    "bloodtest",
+    "urinetest",
+    "ecg",
+    "ctscan",
+    "mri",
+    "xray",
+    "ultrasound",
+    "endoscopy",
+    "biopsy",
+    "bronchoscopy"
+  ];
+
+  const fields =
+    viewer.formFieldCollections ||
+    viewer.retrieveFormFields?.() ||
+    [];
+
+  const normalized = Array.isArray(fields)
+    ? fields
+    : Object.values(fields);
+
+  normalized.forEach((field) => {
+    const name = (field.name || "").toLowerCase();
+
+    // ✅ EXACT MATCH ONLY
+    const shouldBeEditable = LAB_EDITABLE_FIELDS.includes(name);
+
+    viewer.formDesignerModule?.updateFormField(field.id, {
+      isReadOnly: !shouldBeEditable,
+      isEnabled: shouldBeEditable
+    });
+  });
+};
   const resourcesLoaded = async () => {
-    const viewer =
-      viewerRef.current?.ej2Instances || viewerRef.current;
-    if (!viewer || !adminFilledPdfName) return;
-    const resp = await fetch(
-      `${API_BASE}/api/Authentication/GetPdfStream/${encodeURIComponent(adminFilledPdfName)}`,
-      { cache: "no-cache" }
-    );
-    const blob = await resp.blob();
-    const blobUrl = URL.createObjectURL(blob);
-    viewer.load(blobUrl, null);
+    try {
+      const viewer =
+        viewerRef.current?.ej2Instances || viewerRef.current;
+      if (!viewer) {
+        console.warn("Pdfviewerpage: Viewer not ready yet");
+        return;
+      }
+      if (!adminFilledPdfName) {
+        console.warn("Pdfviewerpage: No adminFilledPdfName set");
+        return;
+      }
+
+      const resp = await fetch(
+        `${API_BASE}/api/Authentication/GetPdfStream/${encodeURIComponent(adminFilledPdfName)}`,
+        { cache: "no-cache" }
+      );
+
+      if (!resp.ok) {
+        console.error(`Pdfviewerpage: Failed to fetch PDF: ${resp.status}`, adminFilledPdfName);
+        return;
+      }
+
+      const blob = await resp.blob();
+      if (blob.size === 0) {
+        console.error("Pdfviewerpage: PDF blob is empty");
+        return;
+      }
+      const blobUrl = URL.createObjectURL(blob);
+
+      // ✅ Small delay for viewer readiness
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      if (viewer.load) {
+        viewer.load(blobUrl, null);
+        
+// setTimeout(() => {
+//     syncTestFieldsToAttachments();
+//   }, 300);
+
+      } else if (viewer.open) {
+        viewer.open(blobUrl);
+      }
+    } catch (e) {
+      console.error("Pdfviewerpage: Error loading PDF:", e);
+    }
   };
   const handler = (e) => {
     const el = e.target.closest("input, textarea");
@@ -186,8 +408,67 @@ export default function Pdfviewerpage({ user, patient, onBack }) {
   }, []);
 
   useEffect(() => {
-    if (adminFilledPdfName) resourcesLoaded();
+    if (adminFilledPdfName) {
+      resourcesLoaded();
+    }
   }, [adminFilledPdfName]);
+
+  /* ==============================
+     ✅ Find Target Attachment Field Based on Checked Tests
+  ============================== */
+  const findTargetAttachmentField = () => {
+    const viewer = viewerRef.current?.ej2Instances || viewerRef.current;
+    if (!viewer) return null;
+
+    const fields = viewer?.retrieveFormFields?.() || [];
+    const fieldMap = {};
+  
+    fields.forEach((f) => {
+      const name = (f.name || "").toLowerCase();
+      fieldMap[name] = f;
+    });
+
+    for (const [testName, attachName] of Object.entries(TEST_TO_ATTACHMENT_MAP)) {
+      const testField = fieldMap[testName];
+      if (testField) {
+        const isChecked = testField.isSelected === true || testField.isChecked === true;
+      } else {
+      }
+    }
+    HEALTHCARE_ATTACH_FIELDS.forEach((attachName) => {
+      const attachField = fieldMap[attachName];
+      if (attachField) {
+      } else {
+      }
+    });
+
+    for (const [testName, attachName] of Object.entries(TEST_TO_ATTACHMENT_MAP)) {
+      const testField = fieldMap[testName];
+      const attachField = fieldMap[attachName];
+
+      if (!testField) {
+        continue;
+      }
+
+      // ✅ Check both isSelected and isChecked
+      const isTestChecked = testField?.isSelected === true || testField?.isChecked === true;
+      const isAttachmentEmpty = !attachField?.value;
+
+      // ✅ If test is checked AND attachment field is empty, this is our target
+      if (isTestChecked && attachField && isAttachmentEmpty) {
+        return attachField;
+      }
+    }
+
+    for (const f of fields) {
+      const name = (f.name || "").toLowerCase();
+      if (!HEALTHCARE_ATTACH_FIELDS.includes(name)) continue;
+      if (!f.value) {
+        return f;
+      }
+    }
+    return null;
+  };
 
   /* ==============================
      ✅ Stamp File Selection
@@ -197,31 +478,48 @@ export default function Pdfviewerpage({ user, patient, onBack }) {
     if (!file) return;
 
     const viewer = viewerRef.current?.ej2Instances || viewerRef.current;
-    const fields = viewer?.retrieveFormFields?.() || [];
+    if (!viewer) return;
 
-    let target = null;
-    for (const f of fields) {
-      const name = (f.name || "").toLowerCase();
-      if (!HEALTHCARE_ATTACH_FIELDS.includes(name)) continue;
-      if (!f.value) {
-        target = f;
-        break;
-      }
-      if (!target) target = f;
-    }
+    // ✅ Find the correct target attachment field based on checked tests
+    const target = findTargetAttachmentField();
 
     if (target) {
-      /** ✅ ONLY store locally */
-      pendingAttachmentsRef.current.set(target.name.toLowerCase(), file);
+      const fieldName = target.name.toLowerCase();
+      const fileName = file.name;
 
-      healthcareFileStoreRef.current.set(target.name.toLowerCase(), {
+      /** ✅ ONLY store locally */
+      pendingAttachmentsRef.current.set(fieldName, file);
+
+      healthcareFileStoreRef.current.set(fieldName, {
         file,
         url: URL.createObjectURL(file)
       });
-      /** ✅ Update textbox value */
-      target.value = file.name;
-      viewer.updateFormFieldsValue(target);
-      viewer.formDesignerModule?.updateFormField(target, { value: file.name });
+
+      /** ✅ Update textbox value with proper method */
+      try {
+        // Get fresh field reference to ensure proper update
+        const freshFields = viewer.retrieveFormFields?.() || [];
+        const freshTarget = freshFields.find(f => f.name.toLowerCase() === fieldName);
+
+        if (freshTarget && freshTarget.id) {
+          // Use formDesigner to properly update the field
+          viewer.formDesignerModule?.updateFormField(freshTarget.id, {
+            value: fileName
+          });
+
+          // Trigger property change to sync state
+          setTimeout(() => {
+            const updatedField = viewer.retrieveFormFields?.()?.find(f => f.name.toLowerCase() === fieldName);
+            if (updatedField) {
+              checkDoctorSignature(updatedField);
+            }
+          }, 100);
+        }
+      } catch (e) {
+        console.error("Error updating field:", e);
+      }
+    } else {
+      console.warn("⚠️ No suitable attachment field found");
     }
 
     evt.target.value = "";
@@ -310,9 +608,21 @@ export default function Pdfviewerpage({ user, patient, onBack }) {
 
     try {
       // ✅ Save latest form
-      await savePdf("FINAL_DOCTOR");
-      updatePatientStatus(patient.patientId, "Treatment Completed")
-      // ✅ existing attachment logic can stay (if needed)
+      const finalPdf = await savePdf("FINAL_DOCTOR");
+      
+      // ✅ Update patient object with new PDF filename
+      const patients = JSON.parse(localStorage.getItem("patients") || "[]");
+      const idx = patients.findIndex(
+        p => String(p.patientId) === String(patient.patientId)
+      );
+      if (idx !== -1) {
+        patients[idx].formPdf = finalPdf;  // ✅ Store new filename
+        patients[idx].status = "Treatment Completed";
+        patients[idx].lastUpdated = new Date().toLocaleString();
+        localStorage.setItem("patients", JSON.stringify(patients));
+        window.dispatchEvent(new Event("patientsUpdated"));
+      }
+      
       onBack();
     } finally {
       setIsSubmitting(false);
@@ -358,14 +668,23 @@ export default function Pdfviewerpage({ user, patient, onBack }) {
   };
   const CUSTOM_STAMP_NAME = 'Add Attachment'
   const onAnnotationSelect = React.useCallback((args) => {
-    if (!args) return
-    const shapeType = args.shapeAnnotationType || args.annotation?.shapeAnnotationType || null
-    const { annotationType, annotation } = args;
-    const isStamp = args.annotationCollection && args.annotationCollection[0].shapeAnnotationType == 'stamp';
-    if (!isStamp) return
-    const isOurCustomStamp = annotation?.customStampName === CUSTOM_STAMP_NAME || annotation?.subject === CUSTOM_STAMP_NAME
-    // if (!isOurCustomStamp) return
-    if (stampFileInputRef.current) { stampFileInputRef.current.value = ''; setTimeout(() => stampFileInputRef.current?.click(), 0) }
+    if (!args) return;
+
+    const isStamp = args.annotationCollection && args.annotationCollection[0]?.shapeAnnotationType === 'stamp';
+    
+    if (!isStamp) return;
+
+    // ✅ Reset file input and trigger click
+    if (stampFileInputRef.current) {
+      stampFileInputRef.current.value = '';
+      // Use a small delay to ensure UI refresh
+      setTimeout(() => {
+        stampFileInputRef.current?.click();
+      }, 0);
+    } else {
+      console.warn("⚠️ stampFileInputRef is not available");
+    }
+
     // re-evaluate fields after an annotation interaction (covers drawn signatures)
   }, [])
   const handleAnnotationDoubleClick = (args) => {
@@ -390,14 +709,23 @@ export default function Pdfviewerpage({ user, patient, onBack }) {
     setIsSubmitting(true);
 
     try {
+      // syncTestFieldsToAttachments();
       const latestPdf = await savePdf("LAB");
-      updatePatientStatus(patient.patientId, "Lab Requested");
-      setAdminFilledPdfName(latestPdf);
-      // ✅ persist mapping
-      localStorage.setItem(
-        `patient_form_${patient.patientId}`,
-        latestPdf
+      
+      // ✅ CRITICAL: Update patient object with new PDF filename
+      const patients = JSON.parse(localStorage.getItem("patients") || "[]");
+      const idx = patients.findIndex(
+        p => String(p.patientId) === String(patient.patientId)
       );
+      if (idx !== -1) {
+        patients[idx].formPdf = latestPdf;  // ✅ Store new filename
+        patients[idx].status = "Lab Requested";
+        patients[idx].lastUpdated = new Date().toLocaleString();
+        localStorage.setItem("patients", JSON.stringify(patients));
+        window.dispatchEvent(new Event("patientsUpdated"));
+      }
+      
+      setAdminFilledPdfName(latestPdf);
       await savePdf("LAB_ATTACH");
       onBack();
     } finally {
@@ -451,6 +779,19 @@ export default function Pdfviewerpage({ user, patient, onBack }) {
         })
       });
 
+      // ✅ Update patient object with new PDF filename
+      const patients = JSON.parse(localStorage.getItem("patients") || "[]");
+      const idx = patients.findIndex(
+        p => String(p.patientId) === String(patientId)
+      );
+      if (idx !== -1) {
+        patients[idx].formPdf = fileName;  // ✅ Store new filename
+        patients[idx].status = "Report Uploaded";
+        patients[idx].lastUpdated = new Date().toLocaleString();
+        localStorage.setItem("patients", JSON.stringify(patients));
+        window.dispatchEvent(new Event("patientsUpdated"));
+      }
+
       // ✅ Cleanup (IMPORTANT)
       pendingAttachmentsRef.current.clear();
       for (const v of healthcareFileStoreRef.current.values()) {
@@ -459,13 +800,12 @@ export default function Pdfviewerpage({ user, patient, onBack }) {
         } catch { }
       }
       healthcareFileStoreRef.current.clear();
-      updatePatientStatus(patient.patientId, "Report Uploaded");
       onBack();
     } finally {
       setIsSubmitting(false);
     }
   };
-  const checkDoctorSignature = () => {
+  const checkDoctorSignature = (changedField) => {
     const viewer =
       viewerRef.current?.ej2Instances || viewerRef.current;
     if (!viewer) return;
@@ -503,6 +843,59 @@ export default function Pdfviewerpage({ user, patient, onBack }) {
     });
     setDoctorSigned(doctorHasSigned);
     setAdminSigned(adminHasSigned);
+
+    // ✅ NEW: Sync test fields to attachments when checkbox changes
+    syncTestToAttachmentOnChange(changedField);
+  };
+
+  // ✅ NEW: Dynamic sync - triggered when a checkbox field changes
+  const syncTestToAttachmentOnChange = (changedField) => {
+    const viewer = viewerRef.current?.ej2Instances || viewerRef.current;
+    if (!viewer || !changedField) return;
+
+    const fields = viewer.retrieveFormFields?.() || [];
+    if (!fields || fields.length === 0) return;
+
+    // ✅ Get the name of the checkbox that changed
+    const changedFieldName = (changedField.name || "").toLowerCase().trim();
+    
+    // ✅ Only process if it's a checkbox field
+    if (changedField.formFieldAnnotationType
+ !== "Checkbox") {
+      return;
+    }
+
+    // ✅ Check both isSelected and isChecked properties
+    const isCheckboxChecked = changedField.isSelected === true || changedField.isChecked === true;
+
+    // ✅ Find all attachment fields that include this checkbox name
+    const matchingAttachmentFields = fields.filter(f => {
+      if (!f || !f.name) return false;
+      const fname = (f.name || "").toLowerCase().trim();
+      // Include this attachment field if its name contains part of the checkbox name
+      return fname.includes(changedFieldName.replace("test", "").replace("scan", "").trim()) || 
+             fname.includes(changedFieldName.split(" ")[0]); // match first word
+    });
+    matchingAttachmentFields.forEach(af => {
+    });
+
+    // ✅ Enable or disable matching attachment fields
+    matchingAttachmentFields.forEach(attachmentField => {
+      if (isCheckboxChecked) {
+        // ✅ Checkbox is CHECKED → Enable attachment field
+        viewer.formDesignerModule?.updateFormField(attachmentField.id, {
+          isReadOnly: false,
+          isEnabled: true
+        });
+      } else {
+        // ✅ Checkbox is UNCHECKED → Disable attachment field and clear value
+        viewer.formDesignerModule?.updateFormField(attachmentField.id, {
+          value: "",
+          isReadOnly: true,
+          isEnabled: false
+        });
+      }
+    });
   };
 
   const handleViewBill = async () => {
@@ -696,33 +1089,49 @@ export default function Pdfviewerpage({ user, patient, onBack }) {
 
     setAdminSigned(signed);
   };
-  const getToolbarSettingsByRole = (role) => {
-    const r = String(role || "").toLowerCase();
+ const getToolbarSettingsByRole = (role) => {
+  const r = String(role || "").toLowerCase();
 
-    if (r === "admin") {
-      return {
-        showTooltip: true,
-        toolbarItems: [
-          "PageNavigationTool",
-          "PanTool",
-          "MagnificationTool",
-          "DownloadOption",
-          "PrintOption"
-        ]
-      };
-    }
-
-    // ✅ Doctor & Lab
+  // ✅ ADMIN + Registered → restricted toolbar
+  if (r === "admin" && patient?.status === "Registered") {
     return {
       showTooltip: true,
       toolbarItems: [
         "PageNavigationTool",
-
         "PanTool",
-        "MagnificationTool",
+        "MagnificationTool"
       ]
     };
+  }
+
+  // ✅ ADMIN (other statuses)
+  if (r === "admin") {
+    return {
+      showTooltip: true,
+      toolbarItems: [
+        "PageNavigationTool",
+        "PanTool",
+        "MagnificationTool",
+        "DownloadOption",
+        "PrintOption"
+      ]
+    };
+  }
+
+  // ✅ Doctor & Lab (unchanged)
+  return {
+    showTooltip: true,
+    toolbarItems: [
+      "PageNavigationTool",
+      "PanTool",
+      "MagnificationTool"
+    ]
   };
+};
+  // ✅ DEPRECATED: Old static mapping - now using dynamic syncTestToAttachmentOnChange
+  const syncTestValuesToAttachments = () => {
+  };
+
   const onDocumentLoad = () => {
     for (var i = 0; i < viewerRef.current.annotationCollection.length; i++) {
       if (viewerRef.current.annotationCollection[i].shapeAnnotationType == 'stamp') {
@@ -730,7 +1139,147 @@ export default function Pdfviewerpage({ user, patient, onBack }) {
         viewerRef.current.annotation.editAnnotation(viewerRef.current.annotationCollection[i]);
       }
     }
+    setTimeout(() => {
+      applyDoctorReadOnlyRules();
+      applyLabReadOnlyRules();
+      applyAdminTreatmentCompletedRules(); 
+      applyBillPaidReadOnlyRules();
+      applyDoctorTreatmentCompletedRules(); 
+    }, 300)
   }
+  const applyBillPaidReadOnlyRules = () => {
+  if (patient?.status !== "Bill Paid") return;
+
+  const viewer =
+    viewerRef.current?.ej2Instances || viewerRef.current;
+  if (!viewer) return;
+
+  const BILL_PAID_EDITABLE_FIELDS = [
+    "bloodattach",
+    "urineattach",
+    "ecgattach",
+    "ctattach",
+    "mriattach",
+    "xrayattach",
+    "ultrasoundattach",
+    "endoscopyattach",
+    "biopsyattach",
+    "bronchoscopyattach"
+  ];
+
+  const fields =
+    viewer.formFieldCollections ||
+    viewer.retrieveFormFields?.() ||
+    [];
+
+  const normalized = Array.isArray(fields)
+    ? fields
+    : Object.values(fields);
+
+  normalized.forEach((field) => {
+    const name = (field.name || "").toLowerCase();
+
+    // ✅ EXACT MATCH ONLY — no partial conflicts
+    const shouldBeEditable =
+      BILL_PAID_EDITABLE_FIELDS.includes(name);
+
+    viewer.formDesignerModule?.updateFormField(field.id, {
+      isReadOnly: !shouldBeEditable,
+      isEnabled: shouldBeEditable
+    });
+  });
+};
+const applyDoctorTreatmentCompletedRules = () => {
+  if (user?.role !== "Doctor") return;
+  if (patient?.status !== "Treatment Completed") return;
+
+  const viewer =
+    viewerRef.current?.ej2Instances || viewerRef.current;
+  if (!viewer) return;
+
+  const EDITABLE_FIELDS_TC_DOCTOR = [
+    "bloodattach",
+    "urineattach",
+    "ecgattach",
+    "ctattach",
+    "mriattach",
+    "xrayattach",
+    "ultrasoundattach",
+    "endoscopyattach",
+    "biopsyattach",
+    "bronchoscopyattach"
+  ];
+
+  const fields =
+    viewer.formFieldCollections ||
+    viewer.retrieveFormFields?.() ||
+    [];
+
+  const normalized = Array.isArray(fields)
+    ? fields
+    : Object.values(fields);
+
+  normalized.forEach((field) => {
+    const name = (field.name || "").toLowerCase();
+
+    const shouldBeEditable =
+      EDITABLE_FIELDS_TC_DOCTOR.includes(name);
+
+    viewer.formDesignerModule?.updateFormField(field.id, {
+      isReadOnly: !shouldBeEditable,
+      isEnabled: shouldBeEditable
+    });
+  });
+};
+  const applyAdminTreatmentCompletedRules = () => {
+  if (user?.role !== "Admin") return;
+  if (patient?.status !== "Treatment Completed") return;
+
+  const viewer =
+    viewerRef.current?.ej2Instances || viewerRef.current;
+  if (!viewer) return;
+
+  const ADMIN_TC_EDITABLE_FIELDS = [
+    "bloodattach",
+    "urineattach",
+    "ecgattach",
+    "ctattach",
+    "mriattach",
+    "xrayattach",
+    "ultrasoundattach",
+    "endoscopyattach",
+    "biopsyattach",
+    "bronchoscopyattach",
+    "consulatationcharge",
+    "treatmentcharge",
+    "medicationcharge",
+    "roomcharge",
+    "totalamount",
+    "adminsign"
+  ];
+
+  const fields =
+    viewer.formFieldCollections ||
+    viewer.retrieveFormFields?.() ||
+    [];
+
+  const normalized = Array.isArray(fields)
+    ? fields
+    : Object.values(fields);
+
+  normalized.forEach((field) => {
+    const name = (field.name || "").toLowerCase();
+
+    // ✅ EXACT MATCH ONLY
+    const shouldBeEditable =
+      ADMIN_TC_EDITABLE_FIELDS.includes(name);
+
+    viewer.formDesignerModule?.updateFormField(field.id, {
+      isReadOnly: !shouldBeEditable,
+      isEnabled: shouldBeEditable
+    });
+  });
+};
   /* ==============================
      ✅ Render
   ============================== */
@@ -776,7 +1325,9 @@ export default function Pdfviewerpage({ user, patient, onBack }) {
           formFieldClick={onFormFieldClick}
           enableLocalStorage={true}
           documentLoad={onDocumentLoad}
-          formFieldPropertiesChange={checkDoctorSignature}
+          formFieldPropertiesChange={(args) => {
+            checkDoctorSignature(args?.field || args);
+          }}
           style={{ width: "100%", height: "100%" }}
         >
           <Inject
@@ -803,7 +1354,7 @@ export default function Pdfviewerpage({ user, patient, onBack }) {
 ✅ Action Buttons (Hidden after Final Bill)
 ============================== */}
 
-      {patient?.status !== "Bill Paid" && (
+      {patient?.status !== "Bill Paid" && !isViewingBill && !modalSrc && (
         <div
           style={{
             padding: 12,
@@ -813,44 +1364,53 @@ export default function Pdfviewerpage({ user, patient, onBack }) {
             justifyContent: "flex-end"
           }}
         >
-          {/* ✅ Doctor Actions */}
-          {user?.role === "Doctor" && (
-            <>
-              <button
-                onClick={handleLabTestRequest}
-                disabled={isSubmitting}
-                style={{
-                  background: "#2563eb",
-                  color: "#fff",
-                  padding: "10px 22px",
-                  borderRadius: 8,
-                  border: "none",
-                  fontWeight: 600,
-                  cursor: "pointer"
-                }}
-              >
-                Request Lab Tests
-              </button>
+       {user?.role === "Doctor" &&
+  patient?.status !== "Treatment Completed" && (
+    <>
+      <button
+        onClick={handleLabTestRequest}
+        disabled={isSubmitting}
+        style={{
+          backgroundColor: "#2563eb",   // ✅ blue
+          color: "#ffffff",
+          padding: "8px 16px",
+          borderRadius: "6px",
+          border: "none",
+          fontWeight: 600,
+          cursor: "pointer",
+          marginRight: "8px",
+          opacity: isSubmitting ? 0.6 : 1
+        }}
+      >
+        Request Lab Tests
+      </button>
 
-              <button
-                onClick={handleDoctorSubmit}
-                disabled={!doctorSigned || isSubmitting}
-                style={{
-                  background: doctorSigned ? "#2563eb" : "#9ca3af",
-                  color: "#fff",
-                  padding: "10px 28px",
-                  borderRadius: 8,
-                  border: "none",
-                  cursor: doctorSigned ? "pointer" : "not-allowed"
-                }}
-              >
-                {isSubmitting ? "Submitting..." : "Treatment Completed"}
-              </button>
-            </>
-          )}
-
+      <button
+        onClick={handleDoctorSubmit}
+        disabled={!doctorSigned || isSubmitting}
+        style={{
+          backgroundColor: "#2563eb",   // ✅ blue
+          color: "#ffffff",
+          padding: "8px 16px",
+          borderRadius: "6px",
+          border: "none",
+          fontWeight: 600,
+          cursor:
+            !doctorSigned || isSubmitting
+              ? "not-allowed"
+              : "pointer",
+          opacity:
+            !doctorSigned || isSubmitting ? 0.5 : 1
+        }}
+      >
+        Treatment Completed
+      </button>
+    </>
+)}
+            
+      
           {/* ✅ Lab Action */}
-          {user?.role === "Lab" && (
+          {user?.role === "Lab" && patient?.status !== "Report Uploaded" && patient?.status !== "Treatment Completed" && (
             <button
               onClick={handleLabSubmit}
               disabled={isSubmitting}
@@ -912,6 +1472,7 @@ export default function Pdfviewerpage({ user, patient, onBack }) {
       )}
       {/* ✅ Admin – Generate Bill Button */}
 
+      {!modalSrc && (
       <div style={{
         padding: 12,
         textAlign: "right",
@@ -941,6 +1502,7 @@ export default function Pdfviewerpage({ user, patient, onBack }) {
             </button>
           )}
       </div>
+      )}
 
       {/* ✅ Hidden Inputs */}
       <input

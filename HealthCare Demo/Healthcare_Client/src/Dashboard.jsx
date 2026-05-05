@@ -39,6 +39,7 @@ export default function Dashboard({ user, onOpenReport, onNewPatient }) {
   // ✅ NEW: View button handler
   const handleView = (patient) => {
     if (!patient) return;
+    // ✅ Pass the patient WITH the actual PDF filename stored in formPdf
     onOpenReport(patient);
   };
 
@@ -67,6 +68,18 @@ case "Bill Paid":
       return "—";
   }
 };
+const getDashboardTitle = () => {
+  switch (user?.role) {
+    case "Admin":
+      return "Admin Dashboard";
+    case "Doctor":
+      return "Doctor Dashboard";
+    case "Lab":
+      return "Lab Dashboard";
+    default:
+      return "Dashboard";
+  }
+};
 
 
   return (
@@ -82,10 +95,7 @@ case "Bill Paid":
     marginBottom: 16
   }}
 >
-  <h2 style={{ margin: 0 }}>
-    Patient Dashboard
-  </h2>
-
+  <h3>{getDashboardTitle()}</h3>
   {user?.role === "Admin" && (
     <button
       onClick={addNewPatient}
