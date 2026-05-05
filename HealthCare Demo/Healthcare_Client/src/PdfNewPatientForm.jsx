@@ -51,33 +51,139 @@ export default function PdfNewPatientForm({ user, onBack, onRegister, pdfFileNam
       }, 50);
     });
   const pdfLoadedRef = useRef(false);
-  const handleResourcesLoaded = async () => {
+
+  // ✅ ADD THIS HELPER FUNCTION (anywhere inside the component)
+const applyAdminReadOnlyRules = () => {
+  if (user?.role !== "Admin") return;
+
+  try {
     const viewer =
       viewerRef.current?.ej2Instances || viewerRef.current;
-    if (!viewer) return;
+    if (!viewer) {
+      console.warn("Viewer not available for read-only rules");
+      return;
+    }
 
-    // ✅ Prevent infinite reload
-    if (!pdfLoadedRef.current) {
-      pdfLoadedRef.current = true;
+    const ADMIN_EDITABLE_FIELDS = [
+      "name",
+      "lastname",
+      "gender",
+      "age",
+      "phone",
+      "anumber",
+      "address",
+      "physician",
+      "time",
+      "visit",
+      "previousvisit",
+      // ❌ intentionally NOT including "nextvisit"
+      "temperature",
+      "pulse",
+      "height",
+      "weight",
+      "bmi",
+      "systolic",
+      "diastolic",
+      "date"
+    ];
+
+    let fields =
+      viewer.formFieldCollections ||
+      viewer.retrieveFormFields?.() ||
+      [];
+
+    // ✅ Safety check
+    if (!fields) {
+      console.warn("No form fields found");
+      return;
+    }
+
+    const normalized = Array.isArray(fields)
+      ? fields
+      : Object.values(fields);
+
+    normalized.forEach((field) => {
+      if (!field) return;
+      
+      const name = (field.name || "").toLowerCase();
+
+      // ✅ EXACT MATCH — no partial collisions
+      const shouldBeEditable = ADMIN_EDITABLE_FIELDS.includes(name);
 
       try {
-        const filename = effectivePdfName.toLowerCase().endsWith(".pdf")
-          ? effectivePdfName
-          : `${effectivePdfName}.pdf`;
-
-        const resp = await fetch(
-          `${API_BASE}/api/Authentication/GetPdfStream/${encodeURIComponent(filename)}`
-        );
-        if (!resp.ok) return;
-
-        const blob = await resp.blob();
-        const url = URL.createObjectURL(blob);
-
-        viewer.load(url, null); // ✅ async load
+        viewer.formDesignerModule?.updateFormField(field.id, {
+          isReadOnly: !shouldBeEditable,
+          isEnabled: shouldBeEditable
+        });
       } catch (e) {
-        console.error("PDF load error:", e);
+        console.warn(`Could not update field ${field.id}:`, e.message);
+      }
+    });
+  } catch (e) {
+    console.error("Error in applyAdminReadOnlyRules:", e);
+  }
+};
+const documentLoad = async () => {
+  try {
+    // ✅ Wait for form fields to be fully initialized
+    await new Promise(resolve => setTimeout(resolve, 500));
+    applyAdminReadOnlyRules();
+  } catch (e) {
+    console.error("Error in documentLoad:", e);
+  }
+};
+  const handleResourcesLoaded = async () => {
+    try {
+      const viewer =
+        viewerRef.current?.ej2Instances || viewerRef.current;
+      if (!viewer) {
+        console.warn("Viewer not ready yet");
         return;
       }
+
+      // ✅ Prevent infinite reload
+      if (pdfLoadedRef.current) return;
+      
+      pdfLoadedRef.current = true;
+
+      const filename = effectivePdfName.toLowerCase().endsWith(".pdf")
+        ? effectivePdfName
+        : `${effectivePdfName}.pdf`;
+
+      const resp = await fetch(
+        `${API_BASE}/api/Authentication/GetPdfStream/${encodeURIComponent(filename)}`
+      );
+      
+      if (!resp.ok) {
+        console.error("Failed to fetch PDF:", resp.status);
+        pdfLoadedRef.current = false;
+        return;
+      }
+
+      const blob = await resp.blob();
+      if (blob.size === 0) {
+        console.error("PDF blob is empty");
+        pdfLoadedRef.current = false;
+        return;
+      }
+
+      const url = URL.createObjectURL(blob);
+
+      // ✅ Small delay to ensure viewer is fully initialized
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // ✅ Try load first, fallback to open
+      if (viewer.load) {
+        viewer.load(url, null);
+      } else if (viewer.open) {
+        viewer.open(url);
+      } else {
+        console.error("Viewer has no load or open method");
+        pdfLoadedRef.current = false;
+      }
+    } catch (e) {
+      console.error("PDF load error:", e);
+      pdfLoadedRef.current = false;
     }
   };
   /** ✅ FIXED Submit Logic */
@@ -164,6 +270,31 @@ export default function PdfNewPatientForm({ user, onBack, onRegister, pdfFileNam
       setIsSubmitting(false);
     }
   };
+
+  const getToolbarSettingsForNewPatient = () => {
+  if (user?.role === "Admin") {
+    return {
+      showTooltip: true,
+      toolbarItems: [
+        "PageNavigationTool",
+        "PanTool",
+        "MagnificationTool"
+      ]
+    };
+  }
+
+  // fallback (if ever needed)
+  return {
+    showTooltip: true,
+    toolbarItems: [
+      "PageNavigationTool",
+      "PanTool",
+      "MagnificationTool",
+      "DownloadOption",
+      "PrintOption"
+    ]
+  };
+};
   return (
     <div style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
       {/* Header */}
@@ -180,11 +311,17 @@ export default function PdfNewPatientForm({ user, onBack, onRegister, pdfFileNam
       <div style={{ flex: 1 }}>
         <PdfViewerComponent
           id="newPatientFormViewer"
-          ref={(v) => (viewerRef.current = v)}
+          ref={(inst) => {
+            viewerRef.current = inst;
+          }}
           resourceUrl="https://cdn.syncfusion.com/ej2/31.2.2/dist/ej2-pdfviewer-lib"
           enableToolbar={true}
-          created={() => setViewerReady(true)}
-          resourcesLoaded={handleResourcesLoaded}     // ✅ IMPORTANT
+          toolbarSettings={getToolbarSettingsForNewPatient()}
+          created={() => {
+            setViewerReady(true);
+          }}
+          resourcesLoaded={handleResourcesLoaded}
+          documentLoad={documentLoad}
           style={{ width: "100%", height: "100%" }}
         >
           <Inject

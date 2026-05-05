@@ -3,7 +3,6 @@ import Login from "./Login.jsx";
 import Dashboard from "./Dashboard.jsx";
 import PdfViewerPage from "./Pdfviewerpage.jsx";
 import PdfNewPatientForm from "./PdfNewPatientForm.jsx";
-import PrescriptionForm from "./PrescriptionForm.jsx";
 import "./index.css";
 
 export default function App() {
@@ -25,7 +24,10 @@ const handleLogin = (role) => {
 
   const gotoViewer = (patient, pdfName) => {
     setSelectedPatient(patient);
-    setSelectedPdfName(pdfName || null);
+    // ✅ Priority: use passed pdfName, fallback to patient.formPdf, fallback to default
+    const finalPdfName = pdfName || patient?.formPdf || null;
+    console.log("gotoViewer - Patient:", patient?.patientId, "PDF Name:", finalPdfName);
+    setSelectedPdfName(finalPdfName);
     setRoute("viewer");
   };
 
@@ -75,14 +77,6 @@ const handleLogin = (role) => {
             patient={selectedPatient}
             onBack={() => setRoute("dashboard")}
             pdfFileName={selectedPdfName || 'New_Patient_Form'}
-          />
-        )}
-
-        {route === "prescription" && user && selectedPatient && (
-          <PrescriptionForm
-            user={user}
-            patient={selectedPatient}
-            onBack={() => setRoute("dashboard")}
           />
         )}
 
