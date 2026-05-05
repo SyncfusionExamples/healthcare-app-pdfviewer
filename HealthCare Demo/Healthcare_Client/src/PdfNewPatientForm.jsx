@@ -60,7 +60,6 @@ const applyAdminReadOnlyRules = () => {
     const viewer =
       viewerRef.current?.ej2Instances || viewerRef.current;
     if (!viewer) {
-      console.warn("Viewer not available for read-only rules");
       return;
     }
 
@@ -94,7 +93,6 @@ const applyAdminReadOnlyRules = () => {
 
     // ✅ Safety check
     if (!fields) {
-      console.warn("No form fields found");
       return;
     }
 
@@ -116,11 +114,9 @@ const applyAdminReadOnlyRules = () => {
           isEnabled: shouldBeEditable
         });
       } catch (e) {
-        console.warn(`Could not update field ${field.id}:`, e.message);
       }
     });
   } catch (e) {
-    console.error("Error in applyAdminReadOnlyRules:", e);
   }
 };
 const documentLoad = async () => {
@@ -129,7 +125,6 @@ const documentLoad = async () => {
     await new Promise(resolve => setTimeout(resolve, 500));
     applyAdminReadOnlyRules();
   } catch (e) {
-    console.error("Error in documentLoad:", e);
   }
 };
   const handleResourcesLoaded = async () => {
@@ -137,7 +132,6 @@ const documentLoad = async () => {
       const viewer =
         viewerRef.current?.ej2Instances || viewerRef.current;
       if (!viewer) {
-        console.warn("Viewer not ready yet");
         return;
       }
 
@@ -155,14 +149,12 @@ const documentLoad = async () => {
       );
       
       if (!resp.ok) {
-        console.error("Failed to fetch PDF:", resp.status);
         pdfLoadedRef.current = false;
         return;
       }
 
       const blob = await resp.blob();
       if (blob.size === 0) {
-        console.error("PDF blob is empty");
         pdfLoadedRef.current = false;
         return;
       }
@@ -178,11 +170,9 @@ const documentLoad = async () => {
       } else if (viewer.open) {
         viewer.open(url);
       } else {
-        console.error("Viewer has no load or open method");
         pdfLoadedRef.current = false;
       }
     } catch (e) {
-      console.error("PDF load error:", e);
       pdfLoadedRef.current = false;
     }
   };

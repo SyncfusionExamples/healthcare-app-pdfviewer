@@ -26,7 +26,6 @@ const handleLogin = (role) => {
     setSelectedPatient(patient);
     // ✅ Priority: use passed pdfName, fallback to patient.formPdf, fallback to default
     const finalPdfName = pdfName || patient?.formPdf || null;
-    console.log("gotoViewer - Patient:", patient?.patientId, "PDF Name:", finalPdfName);
     setSelectedPdfName(finalPdfName);
     setRoute("viewer");
   };
