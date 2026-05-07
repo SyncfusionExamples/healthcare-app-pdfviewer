@@ -1017,15 +1017,20 @@ const applyLabReadOnlyRules = () => {
     // ✅ Check both isSelected and isChecked properties
     const isCheckboxChecked = changedField.isSelected === true || changedField.isChecked === true;
 
-    // ✅ Find all attachment fields that include this checkbox name
+    // ✅ Find attachment fields that correspond to this checkbox only (avoid matching the checkbox itself)
+    const base = changedFieldName.replace(/test|scan/g, "").trim();
+    const attachmentNames = HEALTHCARE_ATTACH_FIELDS.map(n => n.toLowerCase().trim());
+
     const matchingAttachmentFields = fields.filter(f => {
       if (!f || !f.name) return false;
       const fname = (f.name || "").toLowerCase().trim();
-      // Include this attachment field if its name contains part of the checkbox name
-      return fname.includes(changedFieldName.replace("test", "").replace("scan", "").trim()) || 
-             fname.includes(changedFieldName.split(" ")[0]); // match first word
-    });
-    matchingAttachmentFields.forEach(af => {
+      // Only consider known attachment fields (prevent matching the checkbox itself)
+      if (!attachmentNames.includes(fname)) return false;
+      // Match by base token (e.g., 'blood' -> 'bloodattach') or exact mapping
+      if (fname.includes(base) || fname === `${base}attach`) return true;
+      const mapped = TEST_TO_ATTACHMENT_MAP[changedFieldName];
+      if (mapped && mapped.toLowerCase() === fname) return true;
+      return false;
     });
 
     // ✅ Enable or disable matching attachment fields
