@@ -19,6 +19,8 @@ import {
 
 export default function Pdfviewerpage({ user, patient, onBack, pdfFileName }) {
   const viewerRef = useRef(null);
+  const sanitizerAttachedRef = useRef(false);
+  const sanitizerHandlerRef = useRef(null);
   const [modalFileName, setModalFileName] = useState("");
   /* ==============================
      ✅ Attachment / Stamp State
@@ -35,6 +37,7 @@ export default function Pdfviewerpage({ user, patient, onBack, pdfFileName }) {
   const basePdfRef = useRef(null);       // Patient Information PDF
   const viewingAttachmentRef = useRef(false);
   const [isViewingBill, setIsViewingBill] = useState(false);
+  const [isViewingAttachment, setIsViewingAttachment] = useState(false);
   const getFileNameFromUrl = (url) => {
     if (!url) return "";
     try {
@@ -349,32 +352,140 @@ const applyLabReadOnlyRules = () => {
 
       if (!resp.ok) {
         console.error(`Pdfviewerpage: Failed to fetch PDF: ${resp.status}`, adminFilledPdfName);
+        // Inform user and try fallback to default template
+        try { } catch(e){}
+        setAdminFilledPdfName('New_Patient_Form.pdf');
         return;
       }
 
+      const contentType = resp.headers.get('content-type') || '';
       const blob = await resp.blob();
-      if (blob.size === 0) {
-        console.error("Pdfviewerpage: PDF blob is empty");
+      if (blob.size === 0 || !contentType.includes('pdf')) {
+        console.error('Pdfviewerpage: Received non-PDF or empty response for', adminFilledPdfName, 'content-type:', contentType);
+        try { } catch(e){}
+        setAdminFilledPdfName('New_Patient_Form.pdf');
         return;
       }
+
       const blobUrl = URL.createObjectURL(blob);
 
       // ✅ Small delay for viewer readiness
       await new Promise(resolve => setTimeout(resolve, 100));
 
       if (viewer.load) {
-        viewer.load(blobUrl, null);
-        
-// setTimeout(() => {
-//     syncTestFieldsToAttachments();
-//   }, 300);
-
+        // small delay to allow internal viewer readiness
+        setTimeout(() => {
+          try {
+            viewer.load(blobUrl, null);
+          } catch (e) {
+            console.error('Pdfviewerpage: viewer.load failed', e);
+          }
+        }, 600);
       } else if (viewer.open) {
-        viewer.open(blobUrl);
+        try {
+          viewer.open(blobUrl);
+        } catch (e) {
+          console.error('Pdfviewerpage: viewer.open failed', e);
+        }
       }
     } catch (e) {
       console.error("Pdfviewerpage: Error loading PDF:", e);
     }
+  };
+
+  // Live sanitizer: enforce date-only for `nextvisit` and date fields during typing
+  const DATE_FIELDS = new Set(["date", "nextvisit"]);
+
+  // Numeric bill fields that should accept only numbers when Admin is editing bill
+  const BILL_NUMERIC_FIELDS = new Set([
+    "consultationcharge",
+    "treatmentcharge",
+    "medicationcharge",
+    "roomcharge",
+    "totalamount"
+  ]);
+
+  const attachLiveFieldSanitizer = () => {
+    const viewer = viewerRef.current?.ej2Instances || viewerRef.current;
+    if (!viewer) return;
+
+    const sanitizeValue = (name, value) => {
+      const n = (name || "").toString().toLowerCase();
+      let v = String(value || "");
+      const last = (n.split(/\.|\[|\]/).filter(Boolean).pop() || n).toLowerCase();
+
+      // Dates: allow digits, slash, dash, dot
+      if (DATE_FIELDS.has(last) || DATE_FIELDS.has(n) || n.includes('date') || n.includes('dob') || n.includes('nextvisit')) {
+        return v.replace(/[^0-9\/\-.]/g, '');
+      }
+
+      // Admin editing bill: enforce numeric-only (allow ., comma) for charge/amount fields
+      if (user?.role === "Admin") {
+        if (BILL_NUMERIC_FIELDS.has(last) || BILL_NUMERIC_FIELDS.has(n) || n.includes('charge') || n.includes('amount') || n.includes('total')) {
+          // Allow digits, dot, comma
+          return v.replace(/[^0-9\.,]/g, '');
+        }
+      }
+
+      return v;
+    };
+
+    try {
+      viewer.formFieldValueChanged = (args) => {
+        try {
+          if (!args?.isValueChanged) return;
+          const rawName = args.field?.name || args.fieldName || args.name || '';
+          const rawValue = args.value ?? args.newValue ?? args.field?.value ?? '';
+          if (!rawName) return;
+          const cleaned = sanitizeValue(rawName, String(rawValue));
+          if (cleaned === String(rawValue)) return;
+          // Attempt to update via formDesignerModule or viewer APIs
+          requestAnimationFrame(() => {
+            try {
+              if (viewer.formDesignerModule?.updateFormField) {
+                viewer.formDesignerModule.updateFormField({ name: rawName }, { value: cleaned });
+                return;
+              }
+              if (typeof viewer.updateFormFieldsValue === 'function') {
+                viewer.updateFormFieldsValue(rawName, cleaned);
+                return;
+              }
+              if ('value' in args) args.value = cleaned;
+            } catch (e) {}
+          });
+        } catch (e) {}
+      };
+    } catch (e) {}
+
+    // delegated input listener fallback
+    try {
+      if (!sanitizerAttachedRef.current) {
+        const container = viewer.element || viewer.container || document.body;
+        const delegated = (ev) => {
+          try {
+            const el = ev.target;
+            if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return;
+            if (!container.contains(el)) return;
+            const name = (el.getAttribute('name') || el.getAttribute('id') || el.dataset?.name || '').toString().toLowerCase();
+            if (!name) return;
+            const before = el.value || '';
+            const cleaned = sanitizeValue(name, before);
+            if (cleaned === before) return;
+            el.value = cleaned;
+            try {
+              if (viewer.formDesignerModule?.updateFormField) {
+                viewer.formDesignerModule.updateFormField({ name }, { value: cleaned });
+              } else if (typeof viewer.updateFormFieldsValue === 'function') {
+                viewer.updateFormFieldsValue(name, cleaned);
+              }
+            } catch (e) {}
+          } catch (e) {}
+        };
+        sanitizerHandlerRef.current = delegated;
+        container.addEventListener('input', delegated, true);
+        sanitizerAttachedRef.current = true;
+      }
+    } catch (e) {}
   };
   const handler = (e) => {
     const el = e.target.closest("input, textarea");
@@ -405,6 +516,19 @@ const applyLabReadOnlyRules = () => {
   useEffect(() => {
     document.addEventListener("click", handler, true);
     return () => document.removeEventListener("click", handler, true);
+  }, []);
+
+  // cleanup sanitizer delegated listener on unmount
+  useEffect(() => {
+    return () => {
+      try {
+        if (sanitizerAttachedRef.current && sanitizerHandlerRef.current) {
+          const viewer = viewerRef.current?.ej2Instances || viewerRef.current;
+          const container = (viewer && (viewer.element || viewer.container)) || document.body;
+          container.removeEventListener('input', sanitizerHandlerRef.current, true);
+        }
+      } catch (e) {}
+    };
   }, []);
 
   useEffect(() => {
@@ -476,6 +600,16 @@ const applyLabReadOnlyRules = () => {
   const onStampFileChange = async (evt) => {
     const file = evt.target.files?.[0];
     if (!file) return;
+
+    // Validate file is a PDF
+    const isPdf = (file.type === "application/pdf") || (file.name || "").toLowerCase().endsWith(".pdf");
+    if (!isPdf) {
+      try {
+        
+      } catch (e) {}
+      evt.target.value = "";
+      return;
+    }
 
     const viewer = viewerRef.current?.ej2Instances || viewerRef.current;
     if (!viewer) return;
@@ -555,6 +689,8 @@ const applyLabReadOnlyRules = () => {
       /** ✅ CASE 2: Existing attachment from server */
       originalPdfRef.current = adminFilledPdfName;
       isViewingAttachmentRef.current = true;
+      viewingAttachmentRef.current = true;
+      setIsViewingAttachment(true);
 
       const pdfFile = adminFilledPdfName.endsWith(".pdf")
         ? adminFilledPdfName
@@ -566,6 +702,7 @@ const applyLabReadOnlyRules = () => {
         `${encodeURIComponent(value)}`;
 
       viewer.load(attachmentUrl, null);
+      // Do not open the annotation toolbar programmatically; show annotation button in main toolbar instead
     } catch (e) {
       console.warn("Attachment open failed", e);
     }
@@ -584,11 +721,16 @@ const applyLabReadOnlyRules = () => {
     // ✅ EXISTING attachment logic (UNCHANGED)
     if (isViewingAttachmentRef.current && originalPdfRef.current) {
       isViewingAttachmentRef.current = false;
+      viewingAttachmentRef.current = false;
+      setIsViewingAttachment(false);
       viewer.load(
         `${API_BASE}/api/Authentication/GetPdfStream/${encodeURIComponent(
           originalPdfRef.current
         )}`
       );
+      try {
+        viewer?.toolbar?.showAnnotationToolbar?.(false);
+      } catch (e) {}
       return;
     }
 
@@ -632,6 +774,14 @@ const applyLabReadOnlyRules = () => {
     const viewer =
       viewerRef.current?.ej2Instances || viewerRef.current;
     if (!viewer) return;
+    // Ensure viewer has its resource/service base configured to avoid internal AJAX to /undefined/Load
+    try {
+      const cdn = "https://cdn.syncfusion.com/ej2/31.2.2/dist/ej2-pdfviewer-lib";
+      if (!viewer.resourcePath) viewer.resourcePath = viewer.resourcePath || cdn;
+      if (!viewer.resourceUrl) viewer.resourceUrl = viewer.resourceUrl || cdn;
+      if (!viewer.serviceUrl) viewer.serviceUrl = viewer.serviceUrl || cdn;
+    } catch (e) {}
+
     const blob = await viewer.saveAsBlob();
     const base64 = await new Promise(res => {
       const r = new FileReader();
@@ -709,24 +859,23 @@ const applyLabReadOnlyRules = () => {
     setIsSubmitting(true);
 
     try {
-      // syncTestFieldsToAttachments();
+      // Save the current form state as the LAB stage. Do NOT load any PDF.
       const latestPdf = await savePdf("LAB");
-      
-      // ✅ CRITICAL: Update patient object with new PDF filename
+
+      // Update patient metadata locally; do not attempt to load or open the saved PDF.
       const patients = JSON.parse(localStorage.getItem("patients") || "[]");
       const idx = patients.findIndex(
         p => String(p.patientId) === String(patient.patientId)
       );
       if (idx !== -1) {
-        patients[idx].formPdf = latestPdf;  // ✅ Store new filename
-        patients[idx].status = "Lab Requested";
+        patients[idx].formPdf = latestPdf; // store filename
+        patients[idx].status = "Lab Test Requested";
         patients[idx].lastUpdated = new Date().toLocaleString();
         localStorage.setItem("patients", JSON.stringify(patients));
         window.dispatchEvent(new Event("patientsUpdated"));
       }
-      
-      setAdminFilledPdfName(latestPdf);
-      await savePdf("LAB_ATTACH");
+
+      // Do not call setAdminFilledPdfName or load any PDF here; return to previous view.
       onBack();
     } finally {
       setIsSubmitting(false);
@@ -868,15 +1017,20 @@ const applyLabReadOnlyRules = () => {
     // ✅ Check both isSelected and isChecked properties
     const isCheckboxChecked = changedField.isSelected === true || changedField.isChecked === true;
 
-    // ✅ Find all attachment fields that include this checkbox name
+    // ✅ Find attachment fields that correspond to this checkbox only (avoid matching the checkbox itself)
+    const base = changedFieldName.replace(/test|scan/g, "").trim();
+    const attachmentNames = HEALTHCARE_ATTACH_FIELDS.map(n => n.toLowerCase().trim());
+
     const matchingAttachmentFields = fields.filter(f => {
       if (!f || !f.name) return false;
       const fname = (f.name || "").toLowerCase().trim();
-      // Include this attachment field if its name contains part of the checkbox name
-      return fname.includes(changedFieldName.replace("test", "").replace("scan", "").trim()) || 
-             fname.includes(changedFieldName.split(" ")[0]); // match first word
-    });
-    matchingAttachmentFields.forEach(af => {
+      // Only consider known attachment fields (prevent matching the checkbox itself)
+      if (!attachmentNames.includes(fname)) return false;
+      // Match by base token (e.g., 'blood' -> 'bloodattach') or exact mapping
+      if (fname.includes(base) || fname === `${base}attach`) return true;
+      const mapped = TEST_TO_ATTACHMENT_MAP[changedFieldName];
+      if (mapped && mapped.toLowerCase() === fname) return true;
+      return false;
     });
 
     // ✅ Enable or disable matching attachment fields
@@ -903,36 +1057,69 @@ const applyLabReadOnlyRules = () => {
     const viewer =
       viewerRef.current?.ej2Instances || viewerRef.current;
     if (!viewer) return;
-    const res = await fetch(
-      `${API_BASE}/api/Authentication/GetPdfStream/${encodeURIComponent(
-        billFile
-      )}`
-    );
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    viewer.load(url, null);
-    setIsViewingBill(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/Authentication/GetPdfStream/${encodeURIComponent(billFile)}`);
+      if (!res.ok) {
+        console.error('handleViewBill: server error', res.status);
+        try {} catch(e){}
+        return;
+      }
+      const contentType = res.headers.get('content-type') || '';
+      const blob = await res.blob();
+      if (blob.size === 0 || !contentType.includes('pdf')) {
+        console.error('handleViewBill: invalid response for bill', { contentType, size: blob.size });
+        try {} catch(e){}
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      try {
+        viewer.load(url, null);
+        setIsViewingBill(true);
+      } catch (e) {
+        console.error('handleViewBill: viewer.load failed', e);
+      }
+    } catch (e) {
+      console.error('handleViewBill: unexpected error', e);
+    }
   };
   const loadPdfFromServer = async (fileName) => {
     if (!fileName) return;
-
-    const res = await fetch(
-      `${API_BASE}/api/Authentication/GetPdfStream/${encodeURIComponent(fileName)}`
-    );
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-
-    const viewer =
-      viewerRef.current?.ej2Instances || viewerRef.current;
-
-    viewer?.load(url);
+    try {
+      const res = await fetch(`${API_BASE}/api/Authentication/GetPdfStream/${encodeURIComponent(fileName)}`);
+      if (!res.ok) {
+        console.error('loadPdfFromServer: server returned', res.status);
+        return false;
+      }
+      const contentType = res.headers.get('content-type') || '';
+      const blob = await res.blob();
+      if (blob.size === 0 || !contentType.includes('pdf')) {
+        console.error('loadPdfFromServer: invalid response', { contentType, size: blob.size });
+        return false;
+      }
+      const url = URL.createObjectURL(blob);
+      const viewer = viewerRef.current?.ej2Instances || viewerRef.current;
+      if (!viewer) return false;
+      try {
+        viewer.load(url);
+        return true;
+      } catch (e) {
+        console.error('loadPdfFromServer: viewer.load failed', e);
+        return false;
+      }
+    } catch (e) {
+      console.error('loadPdfFromServer: unexpected error', e);
+      return false;
+    }
   };
   const handleGenerateBill = async () => {
     // ✅ Extract from medical PDF (this part already works)
     const medicalData = getPatientDataFromMedicalPdf();
 
     // ✅ Load bill template programmatically
-    await loadPdfFromServer("bill.pdf");
+    const ok = await loadPdfFromServer("bill.pdf");
+    if (!ok) {
+      return;
+    }
 
     // ✅ WAIT until Syncfusion internally initializes bill form fields
     waitForBillFormReady(() => {
@@ -1089,7 +1276,7 @@ const applyLabReadOnlyRules = () => {
 
     setAdminSigned(signed);
   };
- const getToolbarSettingsByRole = (role) => {
+ const getToolbarSettingsByRole = (role, forAttachment = false) => {
   const r = String(role || "").toLowerCase();
 
   // ✅ ADMIN + Registered → restricted toolbar
@@ -1118,14 +1305,18 @@ const applyLabReadOnlyRules = () => {
     };
   }
 
-  // ✅ Doctor & Lab (unchanged)
+  // ✅ Doctor & Lab
+  // For Doctor include annotation editing tools in the toolbar when NOT viewing an attachment
+  const doctorItems = ["PageNavigationTool", "PanTool", "MagnificationTool"];
+  if (r === "doctor") {
+    // Only show annotation controls if we're NOT currently viewing an attachment
+    if (!forAttachment) {
+      doctorItems.push("AnnotationEditTool","CommentTool", "Annotation");
+    }
+  }
   return {
     showTooltip: true,
-    toolbarItems: [
-      "PageNavigationTool",
-      "PanTool",
-      "MagnificationTool"
-    ]
+    toolbarItems: doctorItems
   };
 };
   // ✅ DEPRECATED: Old static mapping - now using dynamic syncTestToAttachmentOnChange
@@ -1133,18 +1324,29 @@ const applyLabReadOnlyRules = () => {
   };
 
   const onDocumentLoad = () => {
-    for (var i = 0; i < viewerRef.current.annotationCollection.length; i++) {
-      if (viewerRef.current.annotationCollection[i].shapeAnnotationType == 'stamp') {
-        viewerRef.current.annotationCollection[i].allowedInteractions = ['Select'];
-        viewerRef.current.annotation.editAnnotation(viewerRef.current.annotationCollection[i]);
+    const viewer = viewerRef.current?.ej2Instances || viewerRef.current;
+    if (viewer && Array.isArray(viewer.annotationCollection)) {
+      for (var i = 0; i < viewer.annotationCollection.length; i++) {
+        if (viewer.annotationCollection[i].shapeAnnotationType == 'stamp') {
+          viewer.annotationCollection[i].allowedInteractions = ['Select'];
+          try { viewer.annotation.editAnnotation(viewer.annotationCollection[i]); } catch (e) {}
+        }
       }
     }
+
+    // run post-load setup after a small delay
     setTimeout(() => {
+      try {
+        // keep annotation toolbar control in main toolbar (don't auto-open)
+      } catch (e) {}
+
       applyDoctorReadOnlyRules();
       applyLabReadOnlyRules();
       applyAdminTreatmentCompletedRules(); 
       applyBillPaidReadOnlyRules();
       applyDoctorTreatmentCompletedRules(); 
+      // ensure sanitizer attached after document load
+      attachLiveFieldSanitizer();
     }, 300)
   }
   const applyBillPaidReadOnlyRules = () => {
@@ -1318,7 +1520,7 @@ const applyDoctorTreatmentCompletedRules = () => {
           ref={(inst) => (viewerRef.current = inst)}
           resourceUrl="https://cdn.syncfusion.com/ej2/31.2.2/dist/ej2-pdfviewer-lib"
           enableToolbar={true}
-          toolbarSettings={getToolbarSettingsByRole(user?.role)}
+          toolbarSettings={getToolbarSettingsByRole(user?.role, isViewingAttachment)}
           resourcesLoaded={resourcesLoaded}
           annotationSelect={onAnnotationSelect}
           annotationDoubleClick={handleAnnotationDoubleClick}
@@ -1354,7 +1556,7 @@ const applyDoctorTreatmentCompletedRules = () => {
 ✅ Action Buttons (Hidden after Final Bill)
 ============================== */}
 
-      {patient?.status !== "Bill Paid" && !isViewingBill && !modalSrc && (
+      {patient?.status !== "Bill Paid" && !isViewingBill && !modalSrc && !isViewingAttachment && (
         <div
           style={{
             padding: 12,
@@ -1508,6 +1710,7 @@ const applyDoctorTreatmentCompletedRules = () => {
       <input
         type="file"
         ref={stampFileInputRef}
+        accept=".pdf,application/pdf"
         style={{ display: "none" }}
         onChange={onStampFileChange}
       />

@@ -49,7 +49,7 @@ export default function Dashboard({ user, onOpenReport, onNewPatient }) {
     case "Registered":
       return "New patient record has been created.";
 
-    case "Lab Requested":
+    case "Lab Test Requested":
       return "Lab tests have been requested.";
 
     case "Report Uploaded":
@@ -80,6 +80,45 @@ const getDashboardTitle = () => {
       return "Dashboard";
   }
 };
+
+// Hide billing-related details from Lab users
+const isBillingStatus = (status) => {
+  return status === "Bill Generated" || status === "Bill Paid";
+};
+
+const getDisplayStatusForRole = (status, role) => {
+  const r = String(role || "").toLowerCase();
+  if (r === "lab" && isBillingStatus(status)) {
+    return "—"; // Lab users don't see billing statuses
+  }
+  // Doctors should not see the exact 'Bill Paid' status
+  if (r === "doctor" && String(status || "").toLowerCase() === "bill paid") {
+    return "—";
+  }
+  return status || "—";
+};
+
+// Role-aware patient list and column count
+const filteredPatients = (() => {
+  const r = String(user?.role || "").toLowerCase();
+
+  // Lab users: show only entries that look like lab requests
+  if (r === "lab") {
+    return patients.filter(p => {
+      const s = String(p?.status || "").toLowerCase();
+      return s.includes("lab") && s.includes("request");
+    });
+  }
+
+  // Doctor users: exclude patients whose status is exactly 'Bill Paid'
+  if (r === "doctor") {
+    return patients.filter(p => String(p?.status || "").toLowerCase() !== "bill paid");
+  }
+
+  return patients;
+})();
+
+const columnsCount = String(user?.role || "").toLowerCase() === "lab" ? 4 : 5;
 
 
   return (
@@ -125,23 +164,24 @@ const getDashboardTitle = () => {
                 <th>ID</th>
                 <th>Status</th>
                 <th>Action</th>
-                <th>Comments</th>
+                {/* Hide comments column for Lab role */}
+                {<th>Comments</th>}
               </tr>
             </thead>
 
             <tbody>
-              {patients.length === 0 ? (
+              {filteredPatients.length === 0 ? (
                 <tr>
-                  <td colSpan="5" className="empty-row">
+                  <td colSpan={columnsCount} className="empty-row">
                     No patient records found.
                   </td>
                 </tr>
               ) : (
-                patients.map((p, i) => (
+                filteredPatients.map((p, i) => (
                   <tr key={i}>
                     <td>{p.name || "Unnamed Patient"}</td>
                     <td>{p.patientId || p.id || "—"}</td>
-                    <td className="status-text">{p.status || "—"}</td>
+                    <td className="status-text">{getDisplayStatusForRole(p.status, user?.role)}</td>
                     <td>
                       {/* ✅ FIXED VIEW BUTTON */}
                       <button
